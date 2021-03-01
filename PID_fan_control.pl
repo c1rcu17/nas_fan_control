@@ -1,4 +1,4 @@
-#!/usr/local/bin/perl
+#!/usr/bin/env perl
 
 # This script is based on the hybrid fan controller script created by @Stux, and posted at:
 # https://forums.freenas.org/index.php?threads/script-hybrid-cpu-hd-fan-zone-controller.46159/
@@ -143,16 +143,16 @@ $config_file = '/root/nas_fan_control/PID_fan_control_config.ini';
 ##DEFAULT VALUES
 ## Use the values declared below if the config file is not present
 $hd_ave_target = 38;         # PID control loop will target this average temperature for the warmest N disks
-$Kp = 16/3;                  # PID control loop proportional gain
+$Kp = 8/3;                  # PID control loop proportional gain
 $Ki = 0;                     # PID control loop integral gain
-$Kd = 24;                    # PID control loop derivative gain
+$Kd = 18;                    # PID control loop derivative gain
 $hd_num_peak = 2;            # Number of warmest HDs to use when calculating average temp
-$hd_fan_duty_start     = 60; # HD fan duty cycle when script starts
+$hd_fan_duty_start     = 100; # HD fan duty cycle when script starts
 
 ## DEBUG LEVEL
 ## 0 means no debugging. 1,2,3,4 provide more verbosity
 ## You should run this script in at least level 1 to verify its working correctly on your system
-$debug = 0;
+$debug = 1;
 $debug_log = '/root/Debug_PID_fan_control.log';
 
 ## LOG
@@ -164,9 +164,9 @@ $log_header_hourly_interval = 2; # number of hours between log headers.  Valid o
 
 ## CPU THRESHOLD TEMPS
 ## A modern CPU can heat up from 35C to 60C in a second or two. The fan duty cycle is set based on this
-$high_cpu_temp = 55;       # will go HIGH when we hit
-$med_cpu_temp  = 45;       # will go MEDIUM when we hit, or drop below again
-$low_cpu_temp  = 35;       # will go LOW when we fall below 35 again
+$high_cpu_temp = 63;       # will go HIGH when we hit
+$med_cpu_temp  = 59;       # will go MEDIUM when we hit, or drop below again
+$low_cpu_temp  = 55;       # will go LOW when we fall below 35 again
 
 ## HD THRESHOLD TEMPS
 ## HD change temperature slowly. 
@@ -186,7 +186,7 @@ $hd_max_allowed_temp = 40; # celsius. PID control aborts and fans set to 100% du
 ## when the CPU climbs above this temperature, the HD fans will be overridden
 ## this prevents the HD fans from spinning up when the CPU fans are capable of providing 
 ## sufficient cooling.
-$cpu_hd_override_temp = 65;
+$cpu_hd_override_temp = 67;
 
 ## CPU/HD SHARED COOLING
 ## If your HD fans contribute to the cooling of your CPU you should set this value.
@@ -223,22 +223,22 @@ $cpu_temp_control = 1;  # 1 if the script will control a CPU fan to control CPU 
 ## You need to determine the actual max fan speeds that are achieved by the fans
 ## Connected to the cpu_fan_header and the hd_fan_header.
 ## These values are used to verify high/low fan speeds and trigger a BMC reset if necessary.
-$cpu_max_fan_speed    = 1800;
-$hd_max_fan_speed     = 3300;
+$cpu_max_fan_speed    = 1200; ## 1 x NF-A15 PWM
+$hd_max_fan_speed     = 1600; ## 2 x NF-B9 redux-1600PWM
 
 
 ## CPU FAN DUTY LEVELS
 ## These levels are used to control the CPU fans
 $fan_duty_high         = 100;    # percentage on, ie 100% is full speed.
-$fan_duty_med          =  60;
-$fan_duty_low          =  30;
+$fan_duty_med          =  69;
+$fan_duty_low          =  31;
 
 ## HD FAN DUTY LEVELS
 ## These levels are used to control the HD fans
 $hd_fan_duty_high      = 100;    # percentage on, ie 100% is full speed.
-$hd_fan_duty_med_high  =  80;
-$hd_fan_duty_med_low   =  50;
-$hd_fan_duty_low       =  16;    # some 120mm fans stall below 30.
+$hd_fan_duty_med_high  =  74;
+$hd_fan_duty_med_low   =  48;
+$hd_fan_duty_low       =  23;    # some 120mm fans stall below 30.
 #$hd_fan_duty_start    =  60;    # HD fan duty cycle when script starts - defined in config file
 
 
@@ -257,9 +257,9 @@ $hd_fan_zone  = 1;
 ## these are the fan headers which are used to verify the fan zone is high. FAN1+ are all in Zone 0, FANA is Zone 1.
 ## cpu_fan_header should be in the cpu_fan_zone
 ## hd_fan_header should be in the hd_fan_zone
-$cpu_fan_header = "FAN2";                 # used for printing to standard output for debugging   
-$hd_fan_header  = "FANB";                 # used for printing to standard output for debugging   
-@hd_fan_list = ("FANA", "FANB", "FANC");  # used for logging to file  
+$cpu_fan_header = "FAN1";                 # used for printing to standard output for debugging   
+$hd_fan_header  = "FANA";                 # used for printing to standard output for debugging   
+@hd_fan_list = ("FANA");  # used for logging to file  
 
 
 ################
@@ -268,7 +268,17 @@ $hd_fan_header  = "FANB";                 # used for printing to standard output
 
 ## IPMITOOL PATH
 ## The script needs to know where ipmitool is
-$ipmitool = "/usr/local/bin/ipmitool";
+$ipmitool = `which ipmitool`;
+chomp $ipmitool;
+
+## SMARTCTL PATH
+## The script needs to know where smartctl is
+## Generate an ssh key pair:
+##   ssh-keygen -t ed25519 -f truenas -q -N ""
+##   chmod 400 truenas
+##   ssh-copy-id -i truenas root@10.0.0.62
+##   rm truenas.pub
+$smartctl = "ssh -i truenas root\@10.0.0.62 /usr/local/sbin/smartctl";
 
 ## HD POLLING INTERVAL
 ## The controller will only poll the harddrives periodically. Since hard drives change temperature slowly
@@ -324,8 +334,8 @@ main();
 
 sub main
 {
-    open LOG, ">>", $log or die $!;
-    open DEBUG_LOG, ">>", $debug_log or die $!;
+    open LOG, ">&STDOUT" or die $!;
+    open DEBUG_LOG, ">&STDOUT" or die $!;
 
     ($hd_ave_target, $Kp, $Ki, $Kd, $hd_num_peak, $hd_fan_duty_start) = read_config();
     
@@ -498,7 +508,7 @@ sub main
 #             sleep $hd_polling_interval - 1;
 #         }
         # CPU temps can go from cool to hot in 2 seconds! so we only ever sleep for 1 second.
-        sleep 1;
+        sleep 15;
 
     } # inf loop
 }
@@ -506,10 +516,11 @@ sub main
 ################################################# SUBS
 sub get_hd_list
 {
-    my $disk_list = `camcontrol devlist | grep -v "SSD" | grep -v "Verbatim" | grep -v "Kingston" | grep -v "Elements" | sed 's:.*(::;s:).*::;s:,pass[0-9]*::;s:pass[0-9]*,::' | egrep '^[a]*da[0-9]+\$' | tr '\012' ' '`;
-    dprint(3,"$disk_list\n");
+    # my $disk_list = `camcontrol devlist | grep -v "SSD" | grep -v "Verbatim" | grep -v "Kingston" | grep -v "Elements" | sed 's:.*(::;s:).*::;s:,pass[0-9]*::;s:pass[0-9]*,::' | egrep '^[a]*da[0-9]+\$' | tr '\012' ' '`;
+    # dprint(3,"$disk_list\n");
 
-    my @vals = split(" ", $disk_list);
+    # my @vals = split(" ", $disk_list);
+    my @vals = ("ada0", "ada1", "ada2", "ada3");
     
     foreach my $item (@vals)
     {
@@ -526,7 +537,7 @@ sub get_hd_temp
     foreach my $item (@hd_list)
     {
         my $disk_dev = "/dev/$item";
-        my $command = "/usr/local/sbin/smartctl -A $disk_dev | grep Temperature_Celsius";
+        my $command = "$smartctl -A $disk_dev | grep Temperature_Celsius";
          
         dprint( 3, "$command\n" );
         
@@ -565,7 +576,7 @@ sub get_hd_temps
     foreach my $item (@hd_list)
     {
         my $disk_dev = "/dev/$item";
-        my $command = "/usr/local/sbin/smartctl -A $disk_dev | grep Temperature_Celsius";
+        my $command = "$smartctl -A $disk_dev | grep Temperature_Celsius";
 
         my $output = `$command`;
 
@@ -1053,6 +1064,11 @@ sub set_fan_mode
 
     dprint( 1, "Setting fan mode to $mode ($fan_mode)\n");
     `$ipmitool raw 0x30 0x45 0x01 $mode`;
+    dprint( 1, "Setting thresholds\n");
+    `$ipmitool sensor thresh $cpu_fan_header lower 200 200 200`;
+    `$ipmitool sensor thresh $cpu_fan_header upper @{[$cpu_max_fan_speed/0.8+100]} @{[$cpu_max_fan_speed/0.8+100]} @{[$cpu_max_fan_speed/0.8+100]}`;
+    `$ipmitool sensor thresh $hd_fan_header lower 200 200 200`;
+    `$ipmitool sensor thresh $hd_fan_header upper @{[$hd_max_fan_speed/0.8+100]} @{[$hd_max_fan_speed/0.8+100]} @{[$hd_max_fan_speed/0.8+100]}`;
 
     sleep 5;    #need to give the BMC some breathing room
 
@@ -1065,7 +1081,8 @@ sub set_fan_mode
 sub get_cpu_temp_sysctl
 {
     # significantly more efficient to filter to dev.cpu than to just grep the whole lot!
-    my $core_temps = `sysctl -a dev.cpu | egrep -E \"dev.cpu\.[0-9]+\.temperature\" | awk '{print \$2}' | sed 's/.\$//'`;
+    # my $core_temps = `sysctl -a dev.cpu | egrep -E \"dev.cpu\.[0-9]+\.temperature\" | awk '{print \$2}' | sed 's/.\$//'`;
+     my $core_temps = `sensors | sed -nE "s/^Core [0-9]+:\\s+\\+([0-9]+).*\$/\\1/p" | xargs`;
     chomp($core_temps);
 
     dprint(3,"core_temps:\n$core_temps\n");
